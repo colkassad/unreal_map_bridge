@@ -2,53 +2,86 @@
 
 'use strict'
 
+import idbKeyval from "./javascript/idb-keyval-iife.js";
+import fileUtils from "./javascript/fs-helpers.js"
+import "./javascript/lib.js";
+import "./javascript/jszip.js";
+import "./javascript/pako.min.js";
+import "./javascript/upng.js";
+import "./javascript/tiles.js";
+
 const defaultWaterdepth = 50
-let vmapSize = 18.144;
-let mapSize = 17.28;
-let tileSize = 1.92;
-let grid = loadSettings();
-let mapCanvas, cache, bRefresh = true;
-let prev_lng, prev_lat
+const setIntervalAsync = SetIntervalAsync.setIntervalAsync;
+const clearIntervalAsync = SetIntervalAsync.clearIntervalAsync;
+const pbElement = document.getElementById('progress');
+const previewImage = document.getElementById("previewImage");
+const progressMsg = document.getElementById('progressMsg')
+const progressMsg2 = document.getElementById('progressMsg2')
+const progressBusyArea = document.getElementById('progressBusyArea')
+const progressArea = document.getElementById('progressArea')
+
+let mapSize = 50;
+let vmapSize = mapSize * 1.05;
+let tileSize = mapSize / 9;
+let timer, ticks = 0, prev_lng, prev_lat, mapCanvas, cache
 let panels = document.getElementsByClassName('panel');
 let icons = document.getElementsByClassName('icon');
 let iconClass = [];
-let Gdal
 
-(async function () {
-    Gdal = await initGdalJs({path: 'https://cdn.jsdelivr.net/npm/gdal3.js@2.4.0/dist/package', useWorker: false})
-})();
+let userSettings = await loadUserSettings()
+let grid = await loadSettings();
+let Gdal = await initGdalJs({path: 'https://cdn.jsdelivr.net/npm/gdal3.js@2.4.0/dist/package', useWorker: false})
+
 
 for (let i = 0; i < panels.length; i++) {
     iconClass.push(icons[i].className);
 }
 
 // MapBox API token, temperate email for dev
+//mapboxgl.accessToken = 'pk.eyJ1IjoiZGVsZWJhc2giLCJhIjoiY2t1YWxkODF0MGh2NjJxcXA4czBpdXlmdyJ9.D_ngzR7j4vU1CILtpNLg4Q'
 mapboxgl.accessToken = 'pk.eyJ1IjoiYmVydGRldm4iLCJhIjoiY2t2dXF1ZGhyMHlteTJ2bzJjZzE3M24xOCJ9.J5skknTRyh-6RoDWD4kw2w';
+
 
 let map = new mapboxgl.Map({
     container: 'map',                               // Specify the container ID
-    style: 'mapbox://styles/mapbox/outdoors-v11',   // Specify which map style to use
-    //style: 'mapbox://styles/mapbox/streets-v11',  // Specify which map style to use
+    // style: 'mapbox://styles/mapbox/outdoors-v11',   // Specify which map style to use
+    style: 'mapbox://styles/mapbox/streets-v11',  // Specify which map style to use
     center: [grid.lng, grid.lat],                   // Specify the starting position [lng, lat]
     zoom: grid.zoom,                                // Specify the starting zoom
     preserveDrawingBuffer: true
 });
 
 let geocoder = new MapboxGeocoder({
-    accessToken: mapboxgl.accessToken,
-    mapboxgl: mapboxgl,
-    marker: false
+    accessToken: mapboxgl.accessToken, mapboxgl: mapboxgl, marker: false
 });
-const pbElement2 = document.getElementById('progress2');
-
-const pbElement = document.getElementById('progress');
-const previewImage = document.getElementById("previewImage");
 
 document.getElementById('geocoder').appendChild(geocoder.onAdd(map));
 
 map.on('load', function () {
     map.showTileBoundaries = true;
     mapCanvas = map.getCanvasContainer();
+
+    map.getCanvas().addEventListener('wheel', (e) => {
+        const scrollDirection = e.deltaY < 0 ? 1 : -1;
+
+        e.preventDefault();
+        if (e.shiftKey) {
+            map.scrollZoom.disable();
+            let size = scope.mapSize
+            if (scrollDirection === 1) {
+                size += 1
+            } else {
+                size -= 1
+            }
+            if (size >= 4 && size <= 1000) {
+                scope.mapSize = size
+                let mapSize = document.getElementById('mapSize')
+                changeMapsize(mapSize)
+            }
+        } else {
+            map.scrollZoom.enable();
+        }
+    });
 
     scope.mapSize = mapSize;
     scope.baseLevel = 0;
@@ -109,13 +142,15 @@ map.on('click', function (e) {
     map.getSource('bounding_box_source').setData(bb);
     map.setPaintProperty('bounding_box', 'fill-opacity', 0.45);
     map.panTo(new mapboxgl.LngLat(grid.lng, grid.lat));
+    saveSettings();
+    updateInfopanel();
 });
 
 map.on('idle', function () {
     // scope can be set if bindings.js is loaded (because of docReady)
     scope.waterDepth = parseInt(grid.waterDepth) || 50;
-    scope.landscapeSize = parseInt(grid.landscapeSize) || 0;
-    scope.exportType = parseInt(grid.exportType) || 'pngUnreal';
+    scope.landscapeSize = parseInt(grid.landscapeSize) || 2017;
+    scope.exportType = parseInt(grid.exportType) || 'unrealHeightmap';
     saveSettings();
 });
 
@@ -148,24 +183,21 @@ function onUp(e) {
 
 function addSource() {
     map.addSource('grid', {
-        'type': 'geojson',
-        'data': getGrid(grid.lng, grid.lat, vmapSize)
+        'type': 'geojson', 'data': getGrid(grid.lng, grid.lat, vmapSize)
     });
 
     map.addSource('start', {
-        'type': 'geojson',
-        'data': getGrid(grid.lng, grid.lat, vmapSize / 9)
+        'type': 'geojson', 'data': getGrid(grid.lng, grid.lat, vmapSize / 9)
     });
 
     map.addSource('mapbox-streets', {
-        type: 'vector',
-        url: 'mapbox://mapbox.mapbox-streets-v8'
+        type: 'vector', url: 'mapbox://mapbox.mapbox-streets-v8'
     });
 
-    map.addSource('contours', {
-        type: 'vector',
-        url: 'mapbox://mapbox.mapbox-terrain-v2'
-    });
+    // map.addSource('contours', {
+    //     type: 'vector',
+    //     url: 'mapbox://mapbox.mapbox-terrain-v2'
+    // });
 }
 
 function getTileInfo(lng, lat) {
@@ -235,92 +267,72 @@ function getEncompassedTiles(tileInfo, delta) {
 function addLayer() {
     // Add styles to the map
     map.addLayer({
-        'id': 'gridlines',
-        'type': 'fill',
-        'source': 'grid',
-        'paint': {
-            'fill-color': 'blue',
-            'fill-outline-color': 'blue',
-            'fill-opacity': 0.25
+        'id': 'gridlines', 'type': 'fill', 'source': 'grid', 'paint': {
+            'fill-color': 'blue', 'fill-outline-color': 'blue', 'fill-opacity': 0.25
         }
     });
 
     map.addLayer({
-        'id': 'startsquare',
-        'type': 'fill',
-        'source': 'start',
-        'paint': {
-            'fill-color': 'blue',
-            'fill-outline-color': 'blue',
-            'fill-opacity': 0.3
+        'id': 'startsquare', 'type': 'fill', 'source': 'start', 'paint': {
+            'fill-color': 'blue', 'fill-outline-color': 'blue', 'fill-opacity': 0.3
         }
     });
+    //
+    // map.addLayer({
+    //     'id': 'contours',
+    //     'type': 'line',
+    //     'source': 'contours',
+    //     'source-layer': 'contour',
+    //     'layout': {
+    //         'visibility': 'visible',
+    //         'line-join': 'round',
+    //         'line-cap': 'round'
+    //     },
+    //     'paint': {
+    //         'line-color': '#877b59',
+    //         'line-width': 0.25
+    //     }
+    // });
 
-    map.addLayer({
-        'id': 'contours',
-        'type': 'line',
-        'source': 'contours',
-        'source-layer': 'contour',
-        'layout': {
-            'visibility': 'visible',
-            'line-join': 'round',
-            'line-cap': 'round'
-        },
-        'paint': {
-            'line-color': '#877b59',
-            'line-width': 0.25
-        }
-    });
-
-    map.addLayer({
-        'id': 'water-streets',
-        'source': 'mapbox-streets',
-        'source-layer': 'water',
-        'type': 'fill',
-        'paint': {
-            'fill-color': 'rgba(66,100,225, 0.3)',
-            'fill-outline-color': 'rgba(33,33,255, 1)'
-        }
-    });
+    // map.addLayer({
+    //     'id': 'water-streets',
+    //     'source': 'mapbox-streets',
+    //     'source-layer': 'water',
+    //     'type': 'fill',
+    //     'paint': {
+    //         'fill-color': 'rgba(66,100,225, 0.3)',
+    //         'fill-outline-color': 'rgba(33,33,255, 1)'
+    //     }
+    // });
 }
 
 
 function setMouse() {
     map.on('mouseenter', 'startsquare', function () {
-        // map.setPaintProperty('startsquare', 'fill-opacity', 0.3);
-        // map.setPaintProperty('startsquare', 'fill-color', 'blue');
         mapCanvas.style.cursor = 'move';
-
     });
 
     map.on('mouseleave', 'startsquare', function () {
-        // map.setPaintProperty('startsquare', 'fill-color', 'blue');
-        // map.setPaintProperty('startsquare', 'fill-opacity', 0.3);
-        mapCanvas.style.cursor = '';
+        ;mapCanvas.style.cursor = '';
         saveSettings();
     });
 
     map.on('mousedown', 'startsquare', function (e) {
         // Prevent the default map drag behavior.
         e.preventDefault();
-
         mapCanvas.style.cursor = 'grab';
-
         map.on('mousemove', onMove);
         map.once('mouseup', onUp);
     });
 
     map.on('touchstart', 'startsquare', function (e) {
         if (e.points.length !== 1) return;
-
         // Prevent the default map drag behavior.
         e.preventDefault();
-
         map.on('touchmove', onMove);
         map.once('touchend', onUp);
     });
 }
-
 
 function deleteCaches() {
     if (confirm('Delete the caches.\nIs that okay?')) {
@@ -358,7 +370,6 @@ function setLngLat(mode) {
     }
 }
 
-
 function setGrid(lng, lat, size) {
     map.getSource('grid').setData(getGrid(lng, lat, size));
     map.getSource('start').setData(getGrid(lng, lat, size / 9));
@@ -379,20 +390,35 @@ function getGrid(lng, lat, size) {
     return poly
 }
 
-function loadSettings() {
-    let stored = JSON.parse(localStorage.getItem('grid')) || {};
+async function loadUserSettings() {
+    let userSettings = await idbKeyval.get('userSettings') || {};
+    let dirName
+    if (userSettings.dirHandle) {
+        dirName = userSettings.dirHandle.name
+    } else {
+        dirName = ''
+    }
+    document.getElementById('downloadDirectory').value = dirName
+    document.getElementById('apiKey').value = userSettings.mapboxApiKey || ''
+    return userSettings
+}
+
+function saveUserSettings() {
+    userSettings.mapboxApiKey = document.getElementById('apiKey').value || ''
+    idbKeyval.set('userSettings', userSettings)
+}
+
+async function loadSettings() {
+    let stored = await idbKeyval.get('grid') || {};
 
     // Mt Rainier
     stored.lng = parseFloat(stored.lng) || -121.75954;
     stored.lat = parseFloat(stored.lat) || 46.85255;
-
     stored.zoom = parseFloat(stored.zoom) || 11.0;
-
     stored.minHeight = parseFloat(stored.minHeight) || 0;
     stored.maxHeight = parseFloat(stored.maxHeight) || 0;
-
-    stored.heightContours = stored.heightContours || false;
-    stored.waterContours = stored.waterContours || false;
+    // stored.heightContours = stored.heightContours || false;
+    // stored.waterContours = stored.waterContours || false;
 
     // TODO: do not set global lets!
     document.getElementById('waterDepth').value = parseInt(stored.waterDepth) || defaultWaterdepth;
@@ -404,7 +430,7 @@ function saveSettings() {
     grid.waterDepth = parseInt(document.getElementById('waterDepth').value);
     grid.landscapeSize = scope.landscapeSize;
     grid.exportType = scope.exportType;
-    localStorage.setItem('grid', JSON.stringify(grid));
+    idbKeyval.set('grid', grid);
 }
 
 function Create2DArray(rows, def = null) {
@@ -416,7 +442,6 @@ function Create2DArray(rows, def = null) {
 }
 
 function togglePanel(index) {
-
     let isOpens = [];
     for (let i = 0; i < panels.length; i++) {
         isOpens.push(panels[i].classList.contains('slide-in'));
@@ -434,17 +459,8 @@ function togglePanel(index) {
     // initial settings when each panel is opened
     switch (index) {
         case 0:
-            // if (!isOpens[0]) {
-            //     if (prev_lng === grid.lng.toFixed(5) && prev_lat === grid.lat.toFixed(5)) {
-            //         console.log('no update')
-            //     } else {
-            //         console.log('heigtmap')
-            //         getHeightmap("preview");
-            //     }
-            // }
             break;
         case 1:
-
             break;
         case 2:
             if (!isOpens[2]) {
@@ -456,6 +472,9 @@ function togglePanel(index) {
             }
             break;
         case 3:
+            // none
+            break;
+        case 4:
             // none
             break;
     }
@@ -500,6 +519,9 @@ function zoomOut() {
 }
 
 function changeMapsize(el) {
+    if (el.value < 4) {
+        el.value = 4
+    }
     mapSize = el.value / 1;
     vmapSize = mapSize * 1.05;
     tileSize = mapSize / 9;
@@ -509,26 +531,6 @@ function changeMapsize(el) {
     grid.maxHeight = null;
     updateInfopanel();
 }
-
-// function autoSettings(withMap = true) {
-//     // scope.mapSize = 17.28;
-//     // scope.waterDepth = defaultWaterdepth;
-//     //
-//     // mapSize = scope.mapSize / 1;
-//     // vmapSize = mapSize * 1.05;
-//     // tileSize = mapSize / 9;
-//
-//     if (withMap) {
-//         new Promise((resolve) => {
-//             getHeightmap("preview", resolve);
-//         }).then(() => {
-//             scope.baseLevel = grid.minHeight;
-//             scope.heightScale = Math.min(250, Math.floor((1024 - scope.waterDepth) / (grid.maxHeight - scope.baseLevel) * 100));
-//         });
-//     }
-//
-//     setGrid(grid.lng, grid.lat, vmapSize);
-// }
 
 function setBaseLevel() {
     if (grid.minHeight === null) {
@@ -558,262 +560,258 @@ function setHeightScale() {
 
 function incPb(el, value = 1) {
     let v = el.value + value;
-    el.value = v;
+    if (el.value === el.max) {
+        el.value = 0
+    } else {
+        el.value = v;
+    }
 }
 
-function sanatizeMap(heightmap, xOffset, yOffset) {
-    const heightmapSize = 1081;
-    let sanatizedheightMap = Create2DArray(heightmapSize, 0);
+async function getHeightmap() {
+    return new Promise(async (resolve, reject) => {
 
-    let lowestPositve = 100000;
+        // get the extent of the current map
+        // in heightmap, each pixel is treated as vertex data, and 1081px represents 1080 faces
+        // therefore, "1px = 16m" when the map size is 17.28km
+        let extent = getExtent(grid.lng, grid.lat, mapSize / 1080 * 1081);
 
-    // pass 1: normalize the map, and determine the lowestPositve
-    for (let y = yOffset; y < yOffset + heightmapSize; y++) {
-        for (let x = xOffset; x < xOffset + heightmapSize; x++) {
-            let h = heightmap[y][x];
-            if (h >= 0 && h < lowestPositve) {
-                lowestPositve = h;
-            }
-            sanatizedheightMap[y - yOffset][x - xOffset] = h;
+        // zoom is 14 in principle
+        let zoom = 14;
+
+        // get a tile that covers the top left and bottom right (for the tile count calculation)
+        let x = long2tile(extent.topleft[0], zoom);
+        let y = lat2tile(extent.topleft[1], zoom);
+        let x2 = long2tile(extent.bottomright[0], zoom);
+        let y2 = lat2tile(extent.bottomright[1], zoom);
+
+        // get the required tile count in Zoom 13
+        let tileCnt = Math.max(x2 - x + 1, y2 - y + 1);
+
+        // fixed in high latitudes: adjusted the tile count to 6 or less
+        // because Terrain RGB tile distance depends on latitude
+        // don't need too many tiles
+        if (tileCnt > 6) {
+            let z = zoom;
+            let tx, ty, tx2, ty2, tc;
+            do {
+                z--;
+                tx = long2tile(extent.topleft[0], z);
+                ty = lat2tile(extent.topleft[1], z);
+                tx2 = long2tile(extent.bottomright[0], z);
+                ty2 = lat2tile(extent.bottomright[1], z);
+                tc = Math.max(tx2 - tx + 1, ty2 - ty + 1);
+
+            } while (tc > 6);
+            // reflect the fixed result
+            x = tx;
+            y = ty;
+            zoom = z;
+            tileCnt = tc;
         }
-    }
+        document.getElementById('zoomlevel').innerHTML = zoom
+        let tileLng = tile2long(x, zoom);
+        let tileLat = tile2lat(y, zoom);
 
-    // pass 2: fix negative heights artifact in mapbox maps
-    for (let y = 0; y < heightmapSize; y++) {
-        for (let x = 0; x < heightmapSize; x++) {
-            let h = sanatizedheightMap[y][x];
-            if (h < 0) {
-                sanatizedheightMap[y][x] = lowestPositve;
+        let tileLng2 = tile2long(x + tileCnt, zoom);
+        let tileLat2 = tile2lat(y + tileCnt, zoom);
+
+        // get the length of one side of the tiles extent
+        let distance = turf.distance(turf.point([tileLng, tileLat]), turf.point([tileLng2, tileLat2]), {units: 'kilometers'}) / Math.SQRT2;
+
+        // create the tiles empty array
+        let tiles = Create2DArray(tileCnt);
+        const promiseArray = [];
+
+        // download the tiles
+        for (let i = 0; i < tileCnt; i++) {
+            for (let j = 0; j < tileCnt; j++) {
+                let url = 'https://api.mapbox.com/v4/mapbox.terrain-rgb/' + zoom + '/' + (x + j) + '/' + (y + i) + '@2x.pngraw?access_token=' + mapboxgl.accessToken;
+                let woQUrl = 'https://api.mapbox.com/v4/mapbox.terrain-rgb/' + zoom + '/' + (x + j) + '/' + (y + i) + '@2x.pngraw';
+                promiseArray.push(downloadPngToTile(url, woQUrl).then((png) => tiles[i][j] = png));
             }
         }
-    }
 
-    return sanatizedheightMap;
+        await Promise.all(promiseArray);
+        let heightmap = toHeightmap(tiles, distance);
+
+        let heights = calcMinMaxHeight(heightmap);
+        grid.minHeight = heights.min;
+        grid.maxHeight = heights.max;
+        console.log('complete in ', ticks * 10, ' ms');
+        prev_lng = document.getElementById('lng').innerHTML
+        prev_lat = document.getElementById('lat').innerHTML
+        heightmap ? resolve(heightmap) : reject('timout');
+    });
 }
 
-function getHeightmap(mode = "", callback) {
+
+function startTimer(msg) {
     overlayOn()
-    pbElement.value = 0;
-    pbElement2.value = 0;
-    pbElement2.style.visibility = 'visible';
-    pbElement.style.visibility = 'visible';
-    let autoCalc = document.getElementById("autoCalcBaseHeight").checked
-    // saveSettings(false);
-
-    // get the extent of the current map
-    // in heightmap, each pixel is treated as vertex data, and 1081px represents 1080 faces
-    // therefore, "1px = 16m" when the map size is 17.28km
-    let extent = getExtent(grid.lng, grid.lat, mapSize / 1080 * 1081);
-
-    // zoom is 13 in principle
-    let zoom = 14;
-
-    incPb(pbElement);
-    incPb(pbElement2);
-    // get a tile that covers the top left and bottom right (for the tile count calculation)
-    let x = long2tile(extent.topleft[0], zoom);
-    let y = lat2tile(extent.topleft[1], zoom);
-    let x2 = long2tile(extent.bottomright[0], zoom);
-    let y2 = lat2tile(extent.bottomright[1], zoom);
-
-    // get the required tile count in Zoom 13
-    let tileCnt = Math.max(x2 - x + 1, y2 - y + 1);
-
-    // fixed in high latitudes: adjusted the tile count to 6 or less
-    // because Terrain RGB tile distance depends on latitude
-    // don't need too many tiles
-    incPb(pbElement);
-    incPb(pbElement2);
-    if (tileCnt > 6) {
-        let z = zoom;
-        let tx, ty, tx2, ty2, tc;
-        do {
-            z--;
-            tx = long2tile(extent.topleft[0], z);
-            ty = lat2tile(extent.topleft[1], z);
-            tx2 = long2tile(extent.bottomright[0], z);
-            ty2 = lat2tile(extent.bottomright[1], z);
-            tc = Math.max(tx2 - tx + 1, ty2 - ty + 1);
-            incPb(pbElement);
-            incPb(pbElement2);
-        } while (tc > 6);
-        // reflect the fixed result
-        x = tx;
-        y = ty;
-        zoom = z;
-        tileCnt = tc;
-    }
-
-    let tileLng = tile2long(x, zoom);
-    let tileLat = tile2lat(y, zoom);
-
-    let tileLng2 = tile2long(x + tileCnt, zoom);
-    let tileLat2 = tile2lat(y + tileCnt, zoom);
-
-    // get the length of one side of the tiles extent
-    let distance = turf.distance(turf.point([tileLng, tileLat]), turf.point([tileLng2, tileLat2]), {units: 'kilometers'}) / Math.SQRT2;
-
-    // find out the center position of the area we want inside the tiles
-    let topDistance = turf.distance(turf.point([tileLng, tileLat]), turf.point([tileLng, extent.topleft[1]]), {units: 'kilometers'});
-    let leftDistance = turf.distance(turf.point([tileLng, tileLat]), turf.point([extent.topleft[0], tileLat]), {units: 'kilometers'});
-
-
-    // create the tiles empty array
-    let tiles = Create2DArray(tileCnt);
-
-
-    // download the tiles
-    for (let i = 0; i < tileCnt; i++) {
-        for (let j = 0; j < tileCnt; j++) {
-            incPb(pbElement);
-            incPb(pbElement2);
-            let url = 'https://api.mapbox.com/v4/mapbox.terrain-rgb/' + zoom + '/' + (x + j) + '/' + (y + i) + '@2x.pngraw?access_token=' + mapboxgl.accessToken;
-            let woQUrl = 'https://api.mapbox.com/v4/mapbox.terrain-rgb/' + zoom + '/' + (x + j) + '/' + (y + i) + '@2x.pngraw';
-            downloadPngToTile(url, woQUrl).then((png) => tiles[i][j] = png);
-        }
-    }
-
-
-    // wait for the download to complete
-    let ticks = 0;
-    let timer = window.setInterval(function () {
+    progressArea.style.display = 'block'
+    progressMsg.innerHTML = msg
+    timer = setIntervalAsync(async () => {
         ticks++;
-        incPb(pbElement);
-        incPb(pbElement2);
-
-        if (isDownloadComplete(tiles)) {
-            console.log('download ok');
-            clearInterval(timer);
-            let convertedHeightmap, png, canvas, url;
-
-            // heightmap size corresponds to 1081px map size
-            let heightmap = toHeightmap(tiles, distance);
-
-            // heightmap edge to map edge distance
-            let xOffset = Math.round(leftDistance / distance * heightmap.length);
-            let yOffset = Math.round(topDistance / distance * heightmap.length);
-
-            let sanatizedheightMap = sanatizeMap(heightmap, xOffset, yOffset);
-
-            let heights = calcMinMaxHeight(sanatizedheightMap);
-            grid.minHeight = heights.min;
-            grid.maxHeight = heights.max;
-
-            pbElement.value = 500;
-            pbElement2.value = 500;
-            // callback after height calculation is completed
-            if (typeof callback === 'function') callback();
-
-            let imgUrl
-            switch (mode) {
-
-                case "png":
-                    if (autoCalc === true) {
-                        autoCalculateBaseHeight()
-                    }
-                    convertedHeightmap = convertHeightmap(sanatizedheightMap);
-                    png = UPNG.encodeLL([convertedHeightmap], 1081, 1081, 1, 0, 16);
-                    download('heightmap.png', png, false)
-                    break;
-
-                case "preview": //Set auto level and scale
-                    if (autoCalc === true) {
-                        autoCalculateBaseHeight()
-                    }
-                    convertedHeightmap = convertHeightmap(sanatizedheightMap);
-                    png = UPNG.encodeLL([convertedHeightmap], 1081, 1081, 1, 0, 16);
-                    imgUrl = download('heightmap.png', png, true);
-                    previewImage.src = imgUrl
-                    updateInfopanel()
-                    break;
-
-                case "unreal": //Set auto level and scale
-                    if (autoCalc === true) {
-                        autoCalculateBaseHeight()
-                    }
-                    convertedHeightmap = convertHeightmap(sanatizedheightMap);
-                    png = UPNG.encodeLL([convertedHeightmap], 1081, 1081, 1, 0, 16);
-                    updateInfopanel()
-                    sendToUnreal(png)
-                    break;
-
-                // case "refresh": // Don't set auto level and scale
-                //     if (autoCalc === true) {
-                //         console.log('test')
-                //         autoCalculateBaseHeight()
-                //     }
-                //     convertedHeightmap = convertHeightmap(sanatizedheightMap);
-                //     png = UPNG.encodeLL([convertedHeightmap], 1081, 1081, 1, 0, 16);
-                //     imgUrl = download('heightmap.png', png, true);
-                //     previewImage.src = imgUrl
-                //     updateInfopanel()
-                //     break;
-
-            }
-            console.log('complete in ', ticks * 10, ' ms');
-            prev_lng = document.getElementById('lng').innerHTML
-            prev_lat = document.getElementById('lat').innerHTML
-            // pbElement2.style.visibility = 'hidden';
-            // pbElement.style.visibility = 'hidden';
-            pbElement2.value = 0;
-            pbElement.value = 0;
-            overlayOff()
-        }
-
-        // timeout!
-        if (ticks >= 4096) {
-            clearInterval(timer);
-            console.error('timeout!');
-            pbElement.value = 0;
-            pbElement2.value = 0;
-            overlayOff()
-        }
+        incPb(pbElement)
     }, 10);
 }
 
-async function sendToUnreal(buff) {
-    let landscapeSize = scope.landscapeSize.toString()
-    let exportType = scope.exportType
-    if (exportType === 'png') {
-        let ZrangeSeaLevel = '32767'
-        let maxPngValue = '65535'
-        let resizeMethod = 'lanczos'
-        let translateOptions = [
-            '-ot', 'UInt16',
-            '-of', 'PNG',
-            //'-scale', grid.minHeight.toString(), grid.maxHeight.toString(), ZrangeSeaLevel, maxPngValue,
-            '-outsize', landscapeSize, landscapeSize, '-r', resizeMethod
-        ];
+function stopTimer() {
+    clearIntervalAsync(timer);
+    pbElement.value = 0
+    console.log('complete in ', ticks * 10, ' ms');
+    ticks = 0
+    progressMsg.innerHTML = ''
+    progressArea.style.display = 'none'
+    overlayOff()
+}
 
-        await processGdal(buff, 'heightmap.png', translateOptions, "png");
+function startFakeTimer(msg) {
+    overlayOn()
+    progressBusyArea.style.display = 'block'
+    progressMsg2.innerHTML = msg
+}
+
+function stopFakeTimer() {
+    progressBusyArea.style.display = 'none'
+    progressMsg2.innerHTML = ''
+    overlayOff()
+}
+
+async function previewHeightmap() {
+    startTimer('Processing heightmap')
+    let convertedHeightmap, png, canvas, url, heightmap, imgUrl;
+    let autoCalc = document.getElementById("autoCalcBaseHeight").checked
+    heightmap = await getHeightmap()
+    if (autoCalc === true) {
+        autoCalculateBaseHeight()
+    }
+    convertedHeightmap = convertHeightmap(heightmap);
+    png = UPNG.encodeLL([convertedHeightmap], 1081, 1081, 1, 0, 16);
+    imgUrl = download('heightmap.png', png, true);
+    previewImage.src = imgUrl
+    updateInfopanel()
+    stopTimer()
+}
+
+async function exportMap(buff) {
+
+    let convertedHeightmap, png, heightmap;
+    let autoCalc = document.getElementById("autoCalcBaseHeight").checked
+    let weightmap = document.getElementById('weightmap').checked
+    let satellite = document.getElementById('satellite').checked
+    let geojson = document.getElementById('geojson').checked
+    let worldpartiongridsize = document.getElementById('worldpartiongridsize').value
+    let heightmapblurradius = document.getElementById('blurradius').value
+    let weightmapblurradius = document.getElementById('weightmapblurradius').value
+    let exportBuff
+
+    if (scope.exportType === 'unrealHeightmap' || scope.exportType === 'unrealSend') {
+        startTimer('Processing heightmap')
+        heightmap = await getHeightmap()
+        if (autoCalc === true) {
+            autoCalculateBaseHeight()
+        }
+        convertedHeightmap = convertHeightmap(heightmap);
+        png = UPNG.encodeLL([convertedHeightmap], 1081, 1081, 1, 0, 16);
+        updateInfopanel()
+        stopTimer()
+
+        //Resample rescale
+        //Timer does not work with gdal so fake it
+        startFakeTimer('Resizing and adjusting image')
+        exportBuff = await manipulateImage(png, heightmapblurradius)
+        download('heightmap.png', exportBuff, false);
+        stopFakeTimer()
+
+    } else if (scope.exportType === 'geojsonOnly') {
+
+    } else if (scope.exportType === 'unrealMapImage') {
 
     }
+
+    // //Process satellite
+    // if (satellite === true) {
+    //     startTimer('Downloading satellite')
+    //     //download sat
+    //     //exportBuff = await manipulateImage(buff, 0)
+    //     stopTimer()
+    // }
+    // //Process Weightmap
+    // if (weightmap === true) {
+    //     startTimer('Weightmap')
+    //     //download weight
+    //     //  exportBuff = await manipulateImage(buff, weightmapblurradius)
+    //     stopTimer()
+    // }
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function manipulateImage(buff, blurradius) {
+    //  await sleep('3000')
+    let ZrangeSeaLevel = '32767'
+    let maxPngValue = '65535'
+    let minPngValue = '0'
+    let resizeMethod = 'bilinear'
+    let translateOptions = []
+
+    let sealevel = document.getElementById('sealevel').checked
+    let flipx = document.getElementById('flipx').checked
+    let flipy = document.getElementById('flipy').checked
+    let exportBuffer
+
+    let landscapeSize = scope.landscapeSize.toString()
+
+    let heightimage = await IJS.Image.load(buff);
+
+    //Manipulate image
+    if (flipx === true) {
+        heightimage = await heightimage.flipX()
+    }
+
+    if (flipy === true) {
+        heightimage = await heightimage.flipY()
+    }
+    if (blurradius > 0) {
+        heightimage = await heightimage.blurFilter(blurradius)
+    }
+    exportBuffer = await heightimage.toBuffer()
+
+    // Resample and scale
+    if (landscapeSize !== '0' || landscapeSize !== '1081') {
+        if (sealevel) {
+            translateOptions = ['-ot', 'UInt16', '-of', 'PNG', '-scale', minPngValue, maxPngValue, ZrangeSeaLevel, maxPngValue, '-outsize', landscapeSize, landscapeSize, '-r', resizeMethod];
+        } else {
+            translateOptions = ['-ot', 'UInt16', '-of', 'PNG', '-outsize', landscapeSize, landscapeSize, '-r', resizeMethod];
+        }
+        exportBuffer = await processGdal(exportBuffer, 'heightmap.png', translateOptions, "png");
+    }
+
+    return exportBuffer
 }
 
 async function processGdal(buff, filename, translateOptions, file_type) {
-
-    let blob = new Blob([new Uint8Array(buff)], {type: 'image/' + file_type})
+    let blob = new Blob([buff], {type: 'image/' + file_type})
     const file = new File([blob], filename);
     const result = await Gdal.open(file);
     const dataset = result.datasets[0];
     const filePath = await Gdal.gdal_translate(dataset, translateOptions);
     const fileBytes = await Gdal.getFileBytes(filePath);
-    download(filename, fileBytes, false)
-    //  await this.saveImage(fileBytes, filename, file_type)
-
     Gdal.close(dataset);
+    return fileBytes;
 }
 
-
-function isDownloadComplete(tiles) {
-    let tileNum = tiles.length;
-    for (let i = 0; i < tileNum; i++) {
-        for (let j = 0; j < tileNum; j++) {
-            if (!(tiles[i][j])) return false;
-        }
-    }
-    return true;
-}
+// function isDownloadComplete(tiles) {
+//     let tileNum = tiles.length;
+//     for (let i = 0; i < tileNum; i++) {
+//         for (let j = 0; j < tileNum; j++) {
+//             if (!(tiles[i][j])) return false;
+//         }
+//     }
+//     return true;
+// }
 
 function autoCalculateBaseHeight() {
     setBaseLevel()
@@ -821,6 +819,7 @@ function autoCalculateBaseHeight() {
 }
 
 function toHeightmap(tiles, distance) {
+
     let tileNum = tiles.length;
     let srcMap = Create2DArray(tileNum * 512, 0);
     console.log('tileNum', tileNum);
@@ -828,8 +827,11 @@ function toHeightmap(tiles, distance) {
     // in heightmap, each pixel is treated as vertex data, and 1081px represents 1080 faces
     // therefore, "1px = 16m" when the map size is 17.28km
     let heightmap = Create2DArray(Math.ceil(1080 * (distance / mapSize)), 0);
+
+    //  let heightmap = Create2DArray(Math.ceil(1080), 0);
     let smSize = srcMap.length;
     let hmSize = heightmap.length;
+
     let r = (hmSize - 1) / (smSize - 1);
 
     for (let i = 0; i < tileNum; i++) {
@@ -870,6 +872,21 @@ function toHeightmap(tiles, distance) {
     }
 
     return heightmap;
+}
+
+function setMapStyle(el) {
+    const layerId = el.id;
+    let styleName = map.getStyle().metadata['mapbox:origin'];
+    if (layerId !== 'weightmap') {
+        if (!(styleName)) {
+            styleName = 'satellite-v9';
+        }
+        if (layerId != styleName) {
+            map.setStyle('mapbox://styles/mapbox/' + layerId);
+        }
+    } else {
+        map.setStyle('mapbox://styles/delebash/clfzz7dot000001qilz330eyt');
+    }
 }
 
 function convertHeightmap(heightmap_source) {
@@ -967,19 +984,19 @@ async function downloadPngToTile(url, withoutQueryUrl = url) {
 }
 
 
-function getInfo(fileName) {
-    return 'Heightmap name: ' + fileName + '\n' +
-        '\n' +
-        '/* Generated by height: Skylines online heightmap generator (https://cs.heightmap.skydark.pl) (https://github.com/sysoppl/height-Skylines-heightmap-generator) */\n' +
-        '\n' +
-        'Longitude: ' + grid.lng.toFixed(5) + '\n' +
-        'Latitude: ' + grid.lat.toFixed(5) + '\n' +
-        'Min Height: ' + grid.minHeight + '\n' +
-        'Max Height: ' + grid.maxHeight + '\n' +
-        'Water contours: ' + grid.waterContours + '\n' +
-        'Height contours: ' + grid.heightContours + '\n' +
-        'Zoom: ' + grid.zoom + '\n';
-}
+// function getInfo(fileName) {
+//     return 'Heightmap name: ' + fileName + '\n' +
+//         '\n' +
+//         '/* Generated by height: Skylines online heightmap generator (https://cs.heightmap.skydark.pl) (https://github.com/sysoppl/height-Skylines-heightmap-generator) */\n' +
+//         '\n' +
+//         'Longitude: ' + grid.lng.toFixed(5) + '\n' +
+//         'Latitude: ' + grid.lat.toFixed(5) + '\n' +
+//         'Min Height: ' + grid.minHeight + '\n' +
+//         'Max Height: ' + grid.maxHeight + '\n' +
+//         'Water contours: ' + grid.waterContours + '\n' +
+//         'Height contours: ' + grid.heightContours + '\n' +
+//         'Zoom: ' + grid.zoom + '\n';
+// }
 
 function overlayOn() {
     document.getElementById("overlay").style.display = "block";
@@ -990,11 +1007,35 @@ function overlayOff() {
 }
 
 function exportTypeChange(e) {
-    let ele = document.getElementById("exportType").value;
-    let unrealOptions = document.getElementById("unrealOptions");
-    if (ele.includes('Unreal')){
-        unrealOptions.style.display =''
-    }else{
-        unrealOptions.style.display ='none'
-    }
+    // let ele = document.getElementById("exportType").value;
+    // let unrealOptions = document.getElementById("unrealOptions");
+    // if (ele.includes('unreal')) {
+    //     unrealOptions.style.display = 'block'
+    // } else {
+    //     unrealOptions.style.display = 'none'
+    // }
 }
+
+async function openDirectory() {
+
+    try {
+        userSettings.dirHandle = await fileUtils.getDirHandle();
+    } catch (ex) {
+        if (ex.name === 'AbortError') {
+            return;
+        }
+        const msg = 'An error occured trying to open the file.';
+        console.error(msg, ex);
+    }
+
+    if (!userSettings.dirHandle) {
+        console.log('error dirhandle');
+    } else {
+        document.getElementById('downloadDirectory').value = userSettings.dirHandle.name
+        idbKeyval.set('userSettings', userSettings)
+    }
+
+}
+window.togglePanel = togglePanel
+window.openDirectory = openDirectory
+window.saveUserSettings  = saveUserSettings
