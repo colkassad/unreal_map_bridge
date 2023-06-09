@@ -47,12 +47,40 @@ const previewImage = document.getElementById("previewImage");
 document.getElementById('geocoder').appendChild(geocoder.onAdd(map));
 
 map.on('load', function () {
+    map.showTileBoundaries = true;
     mapCanvas = map.getCanvasContainer();
 
     scope.mapSize = mapSize;
     scope.baseLevel = 0;
     scope.heightScale = 100;
     caches.open('tiles').then((data) => cache = data);
+
+    map.addSource('bounding_box_source', {
+        type: 'geojson',
+        data: {
+          'type': 'Feature',
+          'geometry': {
+            'type': 'Polygon',
+            'coordinates': [[[0, 0],
+              [0, 1],
+              [1, 1],
+              [1, 0],
+              [0, 0]]]
+          }
+        }
+      });
+
+    //set invisible on load
+    map.addLayer({
+        id : 'bounding_box',
+        type : 'fill',
+        source : 'bounding_box_source',
+        layout: {},
+        paint : {
+            'fill-color' : '#088',
+            'fill-opacity' : 0
+        }
+    });
 });
 
 map.on('style.load', function () {
@@ -65,11 +93,22 @@ map.on('click', function (e) {
     grid.lng = e.lngLat.lng;
     grid.lat = e.lngLat.lat;
 
-    setGrid(grid.lng, grid.lat, vmapSize);
+    //setGrid(grid.lng, grid.lat, vmapSize);
+    //map.panTo(new mapboxgl.LngLat(grid.lng, grid.lat));
+    //saveSettings();
+    //updateInfopanel();
+
+    var tileInfo = getTileInfo(grid.lng, grid.lat);
+    console.log(tileInfo);
+
+    var urls = getUrls(tileInfo);
+    console.log(urls);
+    
+    //create the selected tile feature class
+    var bb = getTileGeoJsonBB(tileInfo);
+    map.getSource('bounding_box_source').setData(bb);
+    map.setPaintProperty('bounding_box', 'fill-opacity', 0.45);
     map.panTo(new mapboxgl.LngLat(grid.lng, grid.lat));
-    saveSettings();
-    updateInfopanel();
-    // }
 });
 
 map.on('idle', function () {
@@ -128,6 +167,70 @@ function addSource() {
         url: 'mapbox://mapbox.mapbox-terrain-v2'
     });
 }
+
+function getTileInfo(lng, lat) {
+    var zoom = Math.floor(map.getZoom());
+    var widthInMeters = 40075016.686 * Math.abs(Math.cos(lat)) / Math.pow(2, zoom);
+    var metersPerPixel = widthInMeters / 512;
+    return {
+      z: zoom,
+      x: long2tile(lng, zoom),
+      y: lat2tile(lat, zoom),
+      tileWidthInMeters: widthInMeters,
+      metersPerPixel: metersPerPixel
+    };
+}
+
+function getTileGeoJsonBB(tileInfo) {
+    var bbCoords = {};
+    bbCoords.north = tile2lat(tileInfo.y, tileInfo.z);
+    bbCoords.south = tile2lat(tileInfo.y + 1, tileInfo.z);
+    bbCoords.west = tile2long(tileInfo.x, tileInfo.z);
+    bbCoords.east = tile2long(tileInfo.x + 1, tileInfo.z);
+    var geoJson = {
+      'type': 'Feature',
+      'geometry': {
+        'type': 'Polygon',
+        'coordinates': [[[bbCoords.west, bbCoords.south],
+          [bbCoords.east, bbCoords.south],
+          [bbCoords.east, bbCoords.north],
+          [bbCoords.west, bbCoords.north],
+          [bbCoords.west, bbCoords.south]]]
+      }
+    };
+    return geoJson;
+}
+
+function getUrls(tileInfo) {
+    console.log(tileInfo);
+    const x = tileInfo.x;
+    const y = tileInfo.y;
+    const zoom = tileInfo.z;
+    const encompassedTiles = getEncompassedTiles(tileInfo, 2);
+    console.log(encompassedTiles);
+  return encompassedTiles;
+}
+
+//Returns a list of urls for the tiles that are below the tile at 
+//the given zoom level delta (1 = 4 tiles, 2 = 16 tiles, 3 = 64 tiles, etc.)
+//The list is ordered column by column, left to right, top to bottom, like this (delta = 1):
+//  0  2
+//  1  3
+//Recommend not going above delta = 4, as that's 256 tiles for a heightmap of 8192x8192
+function getEncompassedTiles(tileInfo, delta) {
+    
+    const encompassedTiles = [];
+    const zoomLevel = tileInfo.z + delta;
+  
+    for (let x = tileInfo.x * Math.pow(2, delta); x < (tileInfo.x + 1) * Math.pow(2, delta); x++) {
+      for (let y = tileInfo.y * Math.pow(2, delta); y < (tileInfo.y + 1) * Math.pow(2, delta); y++) {
+        const tileURL = `https://api.mapbox.com/v4/mapbox.terrain-rgb/${zoomLevel}/${x}/${y}@2x.pngraw?access_token=${mapboxgl.accessToken}`;
+        encompassedTiles.push(tileURL);
+      }
+    }
+  
+    return encompassedTiles;
+} 
 
 function addLayer() {
     // Add styles to the map
@@ -720,7 +823,8 @@ function autoCalculateBaseHeight() {
 function toHeightmap(tiles, distance) {
     let tileNum = tiles.length;
     let srcMap = Create2DArray(tileNum * 512, 0);
-
+    console.log('tileNum', tileNum);
+    console.log('srcMap', srcMap.length);
     // in heightmap, each pixel is treated as vertex data, and 1081px represents 1080 faces
     // therefore, "1px = 16m" when the map size is 17.28km
     let heightmap = Create2DArray(Math.ceil(1080 * (distance / mapSize)), 0);
